@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String
 from sqlalchemy.orm import Session
-from .conn import Base,get_db  # 从同级conn模块导入Base
+from .conn import Base, get_db_session  # 从同级conn模块导入Base
 
 # 定义Options模型
 class Options(Base):
@@ -20,23 +20,19 @@ class Options(Base):
         if not isinstance(value, str):
             value = str(value)
 
-        db_gen = get_db()
-        db: Session = next(db_gen)
-        try:
-            obj = db.query(cls).filter_by(key=key).first()
-            if obj:
-                obj.value = value
-            else:
-                obj = cls(key=key, value=value)
-                db.add(obj)
-            db.commit()
-            return True
-        except Exception:
-            db.rollback()
-            return False
-        finally:
-            # 主动关闭 session（即便生成器未被完全迭代）
-            db.close()
+        with get_db_session() as db:
+            try:
+                obj = db.query(cls).filter_by(key=key).first()
+                if obj:
+                    obj.value = value
+                else:
+                    obj = cls(key=key, value=value)
+                    db.add(obj)
+                db.commit()
+                return True
+            except Exception:
+                db.rollback()
+                return False
 
     @classmethod
     # 查询参数值，如果不存在则返回 None
@@ -44,11 +40,7 @@ class Options(Base):
         """
         获取配置项的值。
         """
-        db_gen = get_db()
-        db: Session = next(db_gen)
-        try:
+        with get_db_session() as db:
             obj = db.query(cls).filter_by(key=key).first()
             return obj.value if obj else None
-        finally:
-            db.close()
             

@@ -3,7 +3,7 @@ from fastapi import FastAPI, Form,Request
 from app.utils.helper import *
 import time
 from app.models.sessions import Sessions
-from app.models.conn import get_db
+from app.models.conn import get_db, get_db_session
 from pydantic import BaseModel,EmailStr
 import re
 from app.config import get_config,save_config
@@ -116,28 +116,28 @@ class UserAPI:
         expires_at = current_time + 3600 * 24 * 30  # 设置过期时间为30天
         is_active = 1  # 设置为1表示活跃状态
         # 写入数据库中
-        db = next(get_db())
-        session = Sessions(
-            username=username,
-            token=token,
-            ip=ip,
-            user_agent=user_agent,
-            created_at=created_at,
-            updated_at=updated_at,
-            expires_at=expires_at,
-            is_active=is_active
-        )
-        db.add(session)
-        db.commit()
-        db.refresh(session)
-        # 返回登录成功信息
-        return show_json(200, "success", {
-            "token": session.token,
-            "expires_at": session.expires_at,
-            "username": session.username,
-            "ip": session.ip,
-            "user_agent": session.user_agent
-        })
+        with get_db_session() as db:
+            session = Sessions(
+                username=username,
+                token=token,
+                ip=ip,
+                user_agent=user_agent,
+                created_at=created_at,
+                updated_at=updated_at,
+                expires_at=expires_at,
+                is_active=is_active
+            )
+            db.add(session)
+            db.commit()
+            db.refresh(session)
+            # 返回登录成功信息
+            return show_json(200, "success", {
+                "token": session.token,
+                "expires_at": session.expires_at,
+                "username": session.username,
+                "ip": session.ip,
+                "user_agent": session.user_agent
+            })
     
     # 用户登录状态
     def is_login(self):
@@ -157,14 +157,13 @@ class UserAPI:
         token = auth_header.split(" ")[1]
         
         # 从数据库中删除对应的 session
-        db = next(get_db())
-        session = db.query(Sessions).filter(Sessions.token == token).first()
-        if not session:
-            return show_json(400, "session.expired")
-        
-        db.delete(session)
-        db.commit()
-        db.close()
+        with get_db_session() as db:
+            session = db.query(Sessions).filter(Sessions.token == token).first()
+            if not session:
+                return show_json(400, "session.expired")
+            
+            db.delete(session)
+            db.commit()
         
         return show_json(200, "success")
     
@@ -179,35 +178,33 @@ class UserAPI:
         current_time = int(time.time())
         expires_at = current_time + 3600 * 24 * 30 * 365 * 50  # 设置50年过期
         # 写入sessions表中
-        db = next(get_db())
-        # 检查数据库中是否存在username为"system"的记录，且token为sk-开头的记录
-        existing_session = db.query(Sessions).filter(
-            Sessions.username == "system",
-            Sessions.token.startswith("sk-")
-        ).first()
-        if existing_session:
-            db.delete(existing_session)
+        with get_db_session() as db:
+            # 检查数据库中是否存在username为"system"的记录，且token为sk-开头的记录
+            existing_session = db.query(Sessions).filter(
+                Sessions.username == "system",
+                Sessions.token.startswith("sk-")
+            ).first()
+            if existing_session:
+                db.delete(existing_session)
+                db.commit()
+                return show_json(400, "token.already.exists")
+            
+            session = Sessions(
+                username="system",
+                token=token,
+                ip=ip,
+                user_agent=user_agent,
+                created_at=current_time,
+                updated_at=current_time,
+                expires_at=expires_at,
+                is_active=1
+            )
+            db.add(session)
             db.commit()
-            db.close()
-            return show_json(400, "token.already.exists")
-        
-        session = Sessions(
-            username="system",
-            token=token,
-            ip=ip,
-            user_agent=user_agent,
-            created_at=current_time,
-            updated_at=current_time,
-            expires_at=expires_at,
-            is_active=1
-        )
-        db.add(session)
-        db.commit()
-        db.refresh(session)
-        db.close()
-        return show_json(200, "success", {
-            "token": token
-        })
+            db.refresh(session)
+            return show_json(200, "success", {
+                "token": token
+            })
     
     # 更换token
     async def change_token(self,request: Request):
@@ -220,44 +217,41 @@ class UserAPI:
         current_time = int(time.time())
         expires_at = current_time + 3600 * 24 * 30 * 365 * 50  # 设置50年过期
         # 写入sessions表中
-        db = next(get_db())
-        # 检查数据库中是否存在username为"system"的记录，且token为sk-开头的记录
-        existing_session = db.query(Sessions).filter(
-            Sessions.username == "system",
-            Sessions.token.startswith("sk-")
-        ).first()
-        if not existing_session:
-            db.close()
-            return show_json(400, "token.not.exist")
-        
-        # 更新现有记录
-        existing_session.token = token
-        existing_session.ip = ip
-        existing_session.user_agent = user_agent
-        existing_session.updated_at = current_time
-        existing_session.expires_at = expires_at
-        db.commit()
-        db.refresh(existing_session)
-        db.close()
-        return show_json(200, "success", {
-            "token": token
-        })
+        with get_db_session() as db:
+            # 检查数据库中是否存在username为"system"的记录，且token为sk-开头的记录
+            existing_session = db.query(Sessions).filter(
+                Sessions.username == "system",
+                Sessions.token.startswith("sk-")
+            ).first()
+            if not existing_session:
+                return show_json(400, "token.not.exist")
+            
+            # 更新现有记录
+            existing_session.token = token
+            existing_session.ip = ip
+            existing_session.user_agent = user_agent
+            existing_session.updated_at = current_time
+            existing_session.expires_at = expires_at
+            db.commit()
+            db.refresh(existing_session)
+            return show_json(200, "success", {
+                "token": token
+            })
     
     # 获取token
     async def get_token(self,request: Request):
         # 从数据库中查询对应的 session,要求username为"system"且token以"sk-"开头
-        db = next(get_db())
-        session = db.query(Sessions).filter(
-            Sessions.username == "system",
-            Sessions.token.startswith("sk-")
-        ).first()
-        db.close()
-        if not session:
-            return show_json(404, "token.not.exist")
-        return show_json(200, "success", {
-            "token": session.token,
-            "expires_at": session.expires_at,
-            "ip": session.ip,
-            "user_agent": session.user_agent
-        })
+        with get_db_session() as db:
+            session = db.query(Sessions).filter(
+                Sessions.username == "system",
+                Sessions.token.startswith("sk-")
+            ).first()
+            if not session:
+                return show_json(404, "token.not.exist")
+            return show_json(200, "success", {
+                "token": session.token,
+                "expires_at": session.expires_at,
+                "ip": session.ip,
+                "user_agent": session.user_agent
+            })
         

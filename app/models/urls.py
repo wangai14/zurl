@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String,text
 from sqlalchemy.orm import Session
-from .conn import Base,get_db  # 从同级conn模块导入Base
+from .conn import Base, get_db_session  # 从同级conn模块导入Base
 
 # 短链接表
 class Urls(Base):
@@ -79,15 +79,13 @@ class Urls(Base):
     # 写一个函数，接收一个字典，字典内是short_url和点击次数的键值对，一次批量更新点击次数
     @classmethod
     def update_click_counts(cls, click_counts: dict):
-        db = next(get_db())
         """
         批量更新短链接的点击次数
 
         Args:
-            db: 数据库会话
             click_counts: 包含短链接和点击次数的字典
         """
-        for short_url, clicks in click_counts.items():
-            db.query(cls).filter(cls.short_url == short_url).update({"clicks": cls.clicks + clicks})
-        db.commit()
-        db.close()
+        with get_db_session() as db:
+            for short_url, clicks in click_counts.items():
+                db.query(cls).filter(cls.short_url == short_url).update({"clicks": cls.clicks + clicks})
+            db.commit()

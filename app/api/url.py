@@ -12,7 +12,7 @@ import asyncio
 
 from app.utils.helper import *
 import time
-from app.models.conn import get_db
+from app.models.conn import get_db, get_db_session
 from pydantic import BaseModel,HttpUrl
 from app.models.urls import Urls
 import json
@@ -59,7 +59,7 @@ class UrlAPI:
         else:
             item.short_url = item.short_url.strip().lower()
             # 正则验证short_url是否合法，只能是小写字母或数字或中横线、下划线组合，不超过32位
-            if not re.match(r"^[a-z0-9_-]{1,32}$", item.short_url):
+            if validate_short_link(item.short_url) is False:
                 return show_json(400, "invalid.short.url", {})
             # 检查短链接是否在限制列表中
             if item.short_url in DENY_SHORT_URLS:
@@ -70,41 +70,40 @@ class UrlAPI:
         #     item.title = item.long_url.split("//")[-1].split("/")[0]
 
         # 检查长链接是否已经存在于数据库中
-        db = next(get_db())
-        row = Urls.get_by_long_url(db, long_url)
-        # 如果短链接已经存在，直接返回
-        if row:
-            return show_json(200, "success", {
-                "short_url": row.short_url,
-                "long_url": row.long_url,
-                "title": row.title,
-                "description": row.description,
-            })
-        
-        # 如果ttl_days不为0，则添加过期时间
-        expires_at = 0
-        if item.ttl_days and item.ttl_days > 0:
-            expires_at = current_time + item.ttl_days * 86400
-        
-        # 创建新的Url对象
-        url = Urls(
-            short_url=item.short_url,
-            long_url=long_url,
-            title=item.title,
-            description=item.description,
-            created_at=created_at,
-            updated_at=updated_at,
-            expires_at=expires_at,
-            ip=ip
-        )
+        with get_db_session() as db:
+            row = Urls.get_by_long_url(db, long_url)
+            # 如果短链接已经存在，直接返回
+            if row:
+                return show_json(200, "success", {
+                    "short_url": row.short_url,
+                    "long_url": row.long_url,
+                    "title": row.title,
+                    "description": row.description,
+                })
+            
+            # 如果ttl_days不为0，则添加过期时间
+            expires_at = 0
+            if item.ttl_days and item.ttl_days > 0:
+                expires_at = current_time + item.ttl_days * 86400
+            
+            # 创建新的Url对象
+            url = Urls(
+                short_url=item.short_url,
+                long_url=long_url,
+                title=item.title,
+                description=item.description,
+                created_at=created_at,
+                updated_at=updated_at,
+                expires_at=expires_at,
+                ip=ip
+            )
 
-        # 将新创建的Url对象保存到数据库
-        db.add(url)
-        db.commit()
-        db.refresh(url)
-        # 获取链接的ID
-        id = url.id
-        db.close()
+            # 将新创建的Url对象保存到数据库
+            db.add(url)
+            db.commit()
+            db.refresh(url)
+            # 获取链接的ID
+            id = url.id
 
         # 异步启动更新链接标题和描述，前提是这两者为空
         if not item.title:
@@ -133,20 +132,19 @@ class UrlAPI:
         title = data.get("title", "")
         description = data.get("description", "")
 
-        db = next(get_db())
-        url = Urls.get_by_id(db, id)
-        
-        if not url:
-            return None
-        
-        # 更新标题和描述
-        url.title = title
-        url.description = description
-        url.updated_at = updated_at
-        
-        db.commit()
-        db.refresh(url)
-        db.close()
+        with get_db_session() as db:
+            url = Urls.get_by_id(db, id)
+            
+            if not url:
+                return None
+            
+            # 更新标题和描述
+            url.title = title
+            url.description = description
+            url.updated_at = updated_at
+            
+            db.commit()
+            db.refresh(url)
 
         return None
     
@@ -163,31 +161,30 @@ class UrlAPI:
                 status_code=403
             )
 
-        db = next(get_db())
-        row = Urls.get_by_short_url(db, short_url)
-        
-        # 如果短链接不存在，返回404
-        if not row:
-            return templates.TemplateResponse(
-                name="error_pages/404.html",
-                context={"request": request},
-                status_code=404
-            )
-        
-        # 如果设置了过期时间，且当前时间已经超过过期时间，返回404
-        if row.expires_at and row.expires_at > 0 and int(time.time()) > row.expires_at:
-            return templates.TemplateResponse(
-                name="error_pages/404.html",
-                context={"request": request},
-                status_code=404
-            )
+        with get_db_session() as db:
+            row = Urls.get_by_short_url(db, short_url)
+            
+            # 如果短链接不存在，返回404
+            if not row:
+                return templates.TemplateResponse(
+                    name="error_pages/404.html",
+                    context={"request": request},
+                    status_code=404
+                )
+            
+            # 如果设置了过期时间，且当前时间已经超过过期时间，返回404
+            if row.expires_at and row.expires_at > 0 and int(time.time()) > row.expires_at:
+                return templates.TemplateResponse(
+                    name="error_pages/404.html",
+                    context={"request": request},
+                    status_code=404
+                )
 
-        # 更新访问次数和最后访问时间
-        # row.visit_count += 1
-        # row.last_visited_at = int(time.time())
-        long_url = row.long_url
-        db.commit()
-        db.close()
+            # 更新访问次数和最后访问时间
+            # row.visit_count += 1
+            # row.last_visited_at = int(time.time())
+            long_url = row.long_url
+            db.commit()
 
         # 在函数内部调用点击计数
         await increment_click_count(short_url)
@@ -211,31 +208,29 @@ class UrlAPI:
         # 获取datas的行数
         count = len(datas)
         # 遍历datas，然后一次性插入到数据库中
-        db = next(get_db())
-        for data in datas:
-            timestamp = datetime.strptime(data["timestamp"], "%Y-%m-%d %H:%M:%S").timestamp()
-            # 创建新的Url对象
-            url = Urls(
-                short_url=data["keyword"],
-                long_url=data["url"],
-                title=data.get("title", ""),
-                description="",
-                created_at=timestamp,
-                updated_at=timestamp,
-                ip=data["ip"],
-                clicks=data.get("clicks", 0)
-            )
-            # 将新创建的Url对象保存到数据库
-            db.add(url)
-        db.commit()
-        db.close()
+        with get_db_session() as db:
+            for data in datas:
+                timestamp = datetime.strptime(data["timestamp"], "%Y-%m-%d %H:%M:%S").timestamp()
+                # 创建新的Url对象
+                url = Urls(
+                    short_url=data["keyword"],
+                    long_url=data["url"],
+                    title=data.get("title", ""),
+                    description="",
+                    created_at=timestamp,
+                    updated_at=timestamp,
+                    ip=data["ip"],
+                    clicks=data.get("clicks", 0)
+                )
+                # 将新创建的Url对象保存到数据库
+                db.add(url)
+            db.commit()
 
         return show_json(200, "success", count)
     
     # 获取列表，并进行分页,用page和limit进行分页
     def get_list(self, page: int = 1, limit: int = 10):
-        try:
-            db = next(get_db())
+        with get_db_session() as db:
             # 获取总数
             total = db.query(Urls).count()
             # 获取数据，并按照ID降序排列
@@ -251,27 +246,23 @@ class UrlAPI:
                 "limit": limit,
                 "urls": urls
             })
-        finally:
-            db.close()
     
     # 清空所有链接
     def clear_all(self):
-        db = next(get_db())
-        db.query(Urls).delete()
-        db.commit()
-        db.close()
+        with get_db_session() as db:
+            db.query(Urls).delete()
+            db.commit()
         return show_json(200, "All URLs cleared successfully", {})
     
     # 根据短链接删除单个链接
     def delete_by_short_url(self, short_url: str):
-        db = next(get_db())
-        url = Urls.get_by_short_url(db, short_url)
-        if not url:
-            return show_json(404, "Short URL not found", {})
-        
-        db.delete(url)
-        db.commit()
-        db.close()
+        with get_db_session() as db:
+            url = Urls.get_by_short_url(db, short_url)
+            if not url:
+                return show_json(404, "Short URL not found", {})
+            
+            db.delete(url)
+            db.commit()
         return show_json(200, "Short URL deleted successfully", {})
     
     # 提供获取URL的接口
@@ -366,78 +357,76 @@ class UrlAPI:
         
     # 根据shorten_url查询单个链接信息
     def get_by_shorten_url(self, short_url: str):
-        db = next(get_db())
-        url = Urls.get_by_short_url(db, short_url)
-        db.close()
-        if not url:
-            return show_json(404, "Short URL not found", {})
-        
-        return show_json(200, "success", url)
+        with get_db_session() as db:
+            url = Urls.get_by_short_url(db, short_url)
+            if not url:
+                return show_json(404, "Short URL not found", {})
+            
+            return show_json(200, "success", url)
 
     # 更新短链接信息
     def update_url(self, id:int,item: UrlItem):
-        db = next(get_db())
-        url = Urls.get_by_id(db, id)
+        short_url = item.short_url.strip().lower()
+        if validate_short_link(short_url) is False:
+            return show_json(400, "invalid.short.url", {})
+        with get_db_session() as db:
+            url = Urls.get_by_id(db, id)
 
-        if not url:
-            return show_json(404, "Short URL not found", {})
-        
-        # 检查short_url是否已存在
-        if item.short_url != url.short_url and Urls.check_short_url_exists(db, item.short_url):
-            return show_json(400, f"ShortURL {item.short_url} Already exists", {})
-        
-        # 更新长链接、标题和描述
-        url.long_url = item.long_url
-        url.title = item.title
-        url.short_url = item.short_url
-        url.description = item.description
-        url.updated_at = int(time.time())
-        
-        db.commit()
-        db.refresh(url)
-        db.close()
-        
-        return show_json(200, "Short URL updated successfully", {
-            "short_url": url.short_url,
-            "long_url": url.long_url,
-            "title": url.title,
-            "description": url.description,
-        })
+            if not url:
+                return show_json(404, "Short URL not found", {})
+            
+            # 检查short_url是否已存在
+            if item.short_url != url.short_url and Urls.check_short_url_exists(db, item.short_url):
+                return show_json(400, f"ShortURL {item.short_url} Already exists", {})
+            
+            # 更新长链接、标题和描述
+            url.long_url = item.long_url
+            url.title = item.title
+            url.short_url = short_url
+            url.description = item.description
+            url.updated_at = int(time.time())
+            
+            db.commit()
+            db.refresh(url)
+            
+            return show_json(200, "Short URL updated successfully", {
+                "short_url": url.short_url,
+                "long_url": url.long_url,
+                "title": url.title,
+                "description": url.description,
+            })
     
     # 查询短链接接口，可根据filter和keyword进行查询
     def search_urls(self, item: UrlSearchItem):
-        db = next(get_db())
-        query = db.query(Urls)
-        db.close()
-        
-        # 根据短链接精准查询
-        if item.filter == "short_url":
-            query = query.filter(Urls.short_url == item.keyword)
-        elif item.filter == "long_url":
-            # 长链接模糊查询
-            query = query.filter(Urls.long_url.like(f"%{item.keyword}%"))
-        elif item.filter == "title":
-            # 标题模糊查询
-            query = query.filter(Urls.title.like(f"%{item.keyword}%"))
-        
-        urls = query.limit(30).all()
+        with get_db_session() as db:
+            query = db.query(Urls)
+            
+            # 根据短链接精准查询
+            if item.filter == "short_url":
+                query = query.filter(Urls.short_url == item.keyword)
+            elif item.filter == "long_url":
+                # 长链接模糊查询
+                query = query.filter(Urls.long_url.like(f"%{item.keyword}%"))
+            elif item.filter == "title":
+                # 标题模糊查询
+                query = query.filter(Urls.title.like(f"%{item.keyword}%"))
+            
+            urls = query.limit(30).all()
 
-        if not urls:
-            return show_json(404, "no.query", {})
-        
-        return show_json(200, "success", {
-            "total": len(urls),
-            "page": 1,
-            "limit": 30,
-            "urls": urls
-        })
+            if not urls:
+                return show_json(404, "no.query", {})
+            
+            return show_json(200, "success", {
+                "total": len(urls),
+                "page": 1,
+                "limit": 30,
+                "urls": urls
+            })
     
     # 批量删除短链接
     def batch_delete(self, ids:UrlDeleteItem):
         # 批量删除ids
-        db = next(get_db())
-        db.query(Urls).filter(Urls.id.in_(ids.ids)).delete(synchronize_session=False)
-        db.commit()
-        db.close()
-
+        with get_db_session() as db:
+            db.query(Urls).filter(Urls.id.in_(ids.ids)).delete(synchronize_session=False)
+            db.commit()
         return show_json(200, "success", len(ids.ids))

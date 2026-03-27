@@ -57,3 +57,9 @@ def get_client_ip(request:Request) -> str:
         ip = "0.0.0.0"
 
     return ip
+
+# 使用正则表达式验证短链接，只能是字母或数字或中横线或下划线
+def validate_short_link(short_link: str) -> bool:
+    import re
+    pattern = r'^[a-z0-9_-]{1,32}$'
+    return re.match(pattern, short_link) is not None

@@ -1,6 +1,7 @@
 from sqlalchemy import create_engine, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from contextlib import contextmanager
 
 # 数据库文件路径
 DB_FILE_PATH = "app/data/db/zurl.db"
@@ -11,7 +12,11 @@ engine = create_engine(
     connect_args={
         "check_same_thread": False,
         "timeout": 30,
-    }
+    },
+    pool_size=20,
+    max_overflow=30,
+    pool_timeout=30,
+    pool_recycle=3600,
 )
 
 # 设置SQLite PRAGMA语句以启用WAL模式和性能优化
@@ -38,3 +43,14 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+# 提供非依赖注入场景下的数据库会话上下文管理器
+@contextmanager
+def get_db_session():
+    db_gen = get_db()
+    db = next(db_gen)
+    try:
+        yield db
+    finally:
+        db_gen.close()
